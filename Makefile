@@ -3,7 +3,8 @@ CFLAGS  = -O2 -Wall -Wextra -g -Isrc
 LDFLAGS = -luring
 TARGET  = server
 
-SRCS = src/main.c
+SRCS = src/main.c \
+       src/conn/conn.c
 
 .PHONY: all build clean
 
