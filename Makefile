@@ -4,7 +4,8 @@ LDFLAGS = -luring
 TARGET  = server
 
 SRCS = src/main.c \
-       src/conn/conn.c
+       src/conn/conn.c \
+       src/ring/ring.c
 
 .PHONY: all build clean
 
