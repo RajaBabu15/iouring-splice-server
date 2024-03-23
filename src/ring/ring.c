@@ -67,3 +67,21 @@ void ring_init(struct io_uring *ring)
     }
     io_uring_cqe_seen(ring, cqe);
 }
+
+void ring_submit_accept(struct io_uring *ring, int listen_fd)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_accept(sqe, listen_fd, NULL, NULL, 0);
+    sqe->user_data = ACCEPT_SENTINEL;
+}
+
+void ring_submit_recv(struct io_uring *ring, conn_t *c)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_recv(sqe, c->sock_fd, NULL, BUF_SIZE, 0);
+    /* buf_group must be set after prep_recv — prep zeroes sqe fields */
+    sqe->flags    |= IOSQE_BUFFER_SELECT;
+    sqe->buf_group = BGID;
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_RECV;
+}

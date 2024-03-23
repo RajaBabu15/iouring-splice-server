@@ -17,3 +17,6 @@ void  ring_init(struct io_uring *ring);
 
 char *ring_get_recv_buf(int bid);
 void  ring_reprovide_buffer(struct io_uring *ring, int bid);
+
+void  ring_submit_accept(struct io_uring *ring, int listen_fd);
+void  ring_submit_recv(struct io_uring *ring, conn_t *c);
