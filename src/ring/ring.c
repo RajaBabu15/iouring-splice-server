@@ -85,3 +85,27 @@ void ring_submit_recv(struct io_uring *ring, conn_t *c)
     io_uring_sqe_set_data(sqe, c);
     c->state = STATE_RECV;
 }
+
+void ring_submit_openat(struct io_uring *ring, conn_t *c, int www_dirfd)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_openat(sqe, www_dirfd, c->path, O_RDONLY, 0);
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_OPEN_FILE;
+}
+
+void ring_submit_send_headers(struct io_uring *ring, conn_t *c)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_send(sqe, c->sock_fd, c->hdrbuf, c->hdrlen, MSG_NOSIGNAL);
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_SEND_HEADERS;
+}
+
+void ring_submit_send_404(struct io_uring *ring, conn_t *c)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_send(sqe, c->sock_fd, c->hdrbuf, c->hdrlen, MSG_NOSIGNAL);
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_SEND_404;
+}

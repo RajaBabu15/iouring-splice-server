@@ -20,3 +20,6 @@ void  ring_reprovide_buffer(struct io_uring *ring, int bid);
 
 void  ring_submit_accept(struct io_uring *ring, int listen_fd);
 void  ring_submit_recv(struct io_uring *ring, conn_t *c);
+void  ring_submit_openat(struct io_uring *ring, conn_t *c, int www_dirfd);
+void  ring_submit_send_headers(struct io_uring *ring, conn_t *c);
+void  ring_submit_send_404(struct io_uring *ring, conn_t *c);
