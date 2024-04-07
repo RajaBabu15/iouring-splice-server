@@ -109,3 +109,30 @@ void ring_submit_send_404(struct io_uring *ring, conn_t *c)
     io_uring_sqe_set_data(sqe, c);
     c->state = STATE_SEND_404;
 }
+
+void ring_submit_splice_file_to_pipe(struct io_uring *ring, conn_t *c)
+{
+    off_t    remaining = c->file_size - c->file_offset;
+    size_t   chunk     = (size_t)((off_t)PIPE_CAPACITY < remaining
+                                   ? PIPE_CAPACITY : remaining);
+
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_splice(sqe,
+        c->file_fd, (int64_t)c->file_offset,
+        c->pipe_wr, -1,
+        (unsigned int)chunk, SPLICE_F_MOVE);
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_SPLICE_FILE_TO_PIPE;
+}
+
+void ring_submit_splice_pipe_to_sock(struct io_uring *ring, conn_t *c)
+{
+    /* No SPLICE_F_MORE here: would delay TCP push and hold data in sendbuf */
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_splice(sqe,
+        c->pipe_rd, -1,
+        c->sock_fd, -1,
+        (unsigned int)c->bytes_to_send, SPLICE_F_MOVE);
+    io_uring_sqe_set_data(sqe, c);
+    c->state = STATE_SPLICE_PIPE_TO_SOCK;
+}

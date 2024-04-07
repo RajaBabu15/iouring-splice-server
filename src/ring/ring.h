@@ -6,6 +6,7 @@
 #define BUF_SIZE          4096
 #define BUF_COUNT         64
 #define BGID              0
+#define PIPE_CAPACITY     65536
 #define ACCEPT_SENTINEL   1ULL
 #define PROV_BUF_SENTINEL 2ULL
 
@@ -23,3 +24,5 @@ void  ring_submit_recv(struct io_uring *ring, conn_t *c);
 void  ring_submit_openat(struct io_uring *ring, conn_t *c, int www_dirfd);
 void  ring_submit_send_headers(struct io_uring *ring, conn_t *c);
 void  ring_submit_send_404(struct io_uring *ring, conn_t *c);
+void  ring_submit_splice_file_to_pipe(struct io_uring *ring, conn_t *c);
+void  ring_submit_splice_pipe_to_sock(struct io_uring *ring, conn_t *c);
