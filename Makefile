@@ -6,7 +6,8 @@ TARGET  = server
 SRCS = src/main.c \
        src/conn/conn.c \
        src/http/http.c \
-       src/ring/ring.c
+       src/ring/ring.c \
+       src/server/server.c
 
 .PHONY: all build clean
 
