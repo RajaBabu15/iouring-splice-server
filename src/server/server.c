@@ -65,6 +65,79 @@ static void handle_recv(conn_t *c, struct io_uring_cqe *cqe)
     ring_submit_openat(s_ring, c, s_www_dirfd);
 }
 
+static void handle_openat(conn_t *c, struct io_uring_cqe *cqe)
+{
+    if (cqe->res < 0) {
+        c->hdrlen = (size_t)http_build_404_response(c->hdrbuf, sizeof(c->hdrbuf));
+        ring_submit_send_404(s_ring, c);
+        return;
+    }
+    c->file_fd = cqe->res;
+
+    struct stat st;
+    if (fstat(c->file_fd, &st) < 0 || !S_ISREG(st.st_mode)) {
+        c->hdrlen = (size_t)http_build_404_response(c->hdrbuf, sizeof(c->hdrbuf));
+        ring_submit_send_404(s_ring, c);
+        return;
+    }
+    c->file_size   = st.st_size;
+    c->file_offset = 0;
+
+    if (c->file_size > 0) {
+        int pfd[2];
+        if (pipe2(pfd, O_CLOEXEC) < 0) {
+            perror("pipe2");
+            conn_free(c);
+            return;
+        }
+        c->pipe_rd = pfd[0];
+        c->pipe_wr = pfd[1];
+    }
+
+    c->hdrlen = (size_t)http_build_200_header(
+        c->hdrbuf, sizeof(c->hdrbuf),
+        (long long)c->file_size,
+        http_mime_type(c->path));
+    ring_submit_send_headers(s_ring, c);
+}
+
+static void handle_send_headers(conn_t *c, struct io_uring_cqe *cqe)
+{
+    if (cqe->res < 0)       { conn_free(c); return; }
+    if (c->file_size == 0)  { conn_free(c); return; }
+    ring_submit_splice_file_to_pipe(s_ring, c);
+}
+
+static void handle_splice_file_to_pipe(conn_t *c, struct io_uring_cqe *cqe)
+{
+    if (cqe->res <= 0) { conn_free(c); return; }
+    c->file_offset  += cqe->res;
+    c->bytes_to_send = (size_t)cqe->res;
+    ring_submit_splice_pipe_to_sock(s_ring, c);
+}
+
+static void handle_splice_pipe_to_sock(conn_t *c, struct io_uring_cqe *cqe)
+{
+    if (cqe->res <= 0) { conn_free(c); return; }
+
+    c->bytes_to_send -= (size_t)cqe->res;
+
+    if (c->bytes_to_send > 0) {
+        ring_submit_splice_pipe_to_sock(s_ring, c);
+        return;
+    }
+    if (c->file_offset < c->file_size)
+        ring_submit_splice_file_to_pipe(s_ring, c);
+    else
+        conn_free(c);
+}
+
+static void handle_send_404(conn_t *c, struct io_uring_cqe *cqe)
+{
+    (void)cqe;
+    conn_free(c);
+}
+
 int server_setup_listen_socket(int port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -130,7 +203,12 @@ void server_event_loop(struct io_uring *ring, int listen_fd, int www_dirfd)
             } else {
                 conn_t *c = (conn_t *)(uintptr_t)ud;
                 switch (c->state) {
-                case STATE_RECV: handle_recv(c, cqe); break;
+                case STATE_RECV:             handle_recv(c, cqe);                break;
+                case STATE_OPEN_FILE:        handle_openat(c, cqe);              break;
+                case STATE_SEND_HEADERS:     handle_send_headers(c, cqe);        break;
+                case STATE_SPLICE_FILE_TO_PIPE: handle_splice_file_to_pipe(c, cqe); break;
+                case STATE_SPLICE_PIPE_TO_SOCK: handle_splice_pipe_to_sock(c, cqe); break;
+                case STATE_SEND_404:         handle_send_404(c, cqe);            break;
                 default:
                     fprintf(stderr, "unknown state %d\n", c->state);
                     conn_free(c);
