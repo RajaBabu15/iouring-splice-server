@@ -35,6 +35,8 @@ const char *http_normalize_path(const char *url_path)
     const char *rel = url_path + 1;
     if (rel[0] == '\0')
         return "index.html";
+    if (strstr(rel, "..") != NULL)      /* directory traversal guard */
+        return NULL;
     return rel;
 }
 
