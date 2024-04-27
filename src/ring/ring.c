@@ -115,12 +115,16 @@ void ring_submit_splice_file_to_pipe(struct io_uring *ring, conn_t *c)
     off_t    remaining = c->file_size - c->file_offset;
     size_t   chunk     = (size_t)((off_t)PIPE_CAPACITY < remaining
                                    ? PIPE_CAPACITY : remaining);
+    int      is_last   = ((off_t)chunk >= remaining);
+    /* SPLICE_F_MORE on non-final chunks: tells kernel more data follows into
+     * the pipe, avoiding a premature wakeup. Omit on the last chunk. */
+    unsigned flags     = SPLICE_F_MOVE | (is_last ? 0u : SPLICE_F_MORE);
 
     struct io_uring_sqe *sqe = get_sqe(ring);
     io_uring_prep_splice(sqe,
         c->file_fd, (int64_t)c->file_offset,
         c->pipe_wr, -1,
-        (unsigned int)chunk, SPLICE_F_MOVE);
+        (unsigned int)chunk, flags);
     io_uring_sqe_set_data(sqe, c);
     c->state = STATE_SPLICE_FILE_TO_PIPE;
 }
