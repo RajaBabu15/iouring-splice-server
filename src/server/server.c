@@ -46,6 +46,9 @@ static void handle_recv(conn_t *c, struct io_uring_cqe *cqe)
 
     int bid = (int)(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
 
+    /* reprovide before any other work — pool exhaustion kills new connections */
+    ring_reprovide_buffer(s_ring, bid);
+
     char url_path[256];
     char *buf = ring_get_recv_buf(bid);
     if (http_parse_request(buf, cqe->res, url_path, sizeof(url_path)) < 0) {
@@ -61,7 +64,6 @@ static void handle_recv(conn_t *c, struct io_uring_cqe *cqe)
     }
     strncpy(c->path, relpath, sizeof(c->path) - 1);
     c->path[sizeof(c->path) - 1] = '\0';
-    ring_reprovide_buffer(s_ring, bid);
     ring_submit_openat(s_ring, c, s_www_dirfd);
 }
 
