@@ -12,6 +12,10 @@ static char recv_bufs[BUF_COUNT][BUF_SIZE];
 static struct io_uring_sqe *get_sqe(struct io_uring *ring)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    if (!sqe) {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
     if (!sqe) { fprintf(stderr, "SQ full\n"); exit(1); }
     return sqe;
 }
