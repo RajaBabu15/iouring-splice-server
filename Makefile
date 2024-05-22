@@ -9,7 +9,7 @@ SRCS = src/main.c \
        src/ring/ring.c \
        src/server/server.c
 
-.PHONY: all build run www bench clean
+.PHONY: all build run www bench clean docker-build docker-run
 
 all: build
 
@@ -37,6 +37,15 @@ bench:
 	wrk -t4 -c100 -d15s http://localhost:$(or $(PORT),8080)/index.html
 	@echo "\n=== large file (big.bin, 4 MB) ==="
 	wrk -t4 -c50  -d15s http://localhost:$(or $(PORT),8080)/big.bin
+
+docker-build:
+	docker build -t iouring-splice-server .
+
+docker-run: docker-build www
+	docker run --rm -p $(or $(PORT),8080):8080 \
+	    --security-opt seccomp=unconfined \
+	    -v "$(CURDIR)/www:/app/www" \
+	    iouring-splice-server
 
 clean:
 	rm -f $(TARGET)
