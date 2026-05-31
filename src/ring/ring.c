@@ -90,6 +90,22 @@ void ring_submit_recv(struct io_uring *ring, conn_t *c)
     c->state = STATE_RECV;
 }
 
+#ifdef TLS_ENABLED
+void ring_submit_accept_tls(struct io_uring *ring, int listen_fd)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_accept(sqe, listen_fd, NULL, NULL, 0);
+    sqe->user_data = ACCEPT_TLS_SENTINEL;
+}
+
+void ring_submit_poll(struct io_uring *ring, conn_t *c, unsigned poll_mask)
+{
+    struct io_uring_sqe *sqe = get_sqe(ring);
+    io_uring_prep_poll_add(sqe, c->sock_fd, poll_mask);
+    io_uring_sqe_set_data(sqe, c);
+}
+#endif
+
 void ring_submit_openat(struct io_uring *ring, conn_t *c, int www_dirfd)
 {
     struct io_uring_sqe *sqe = get_sqe(ring);
