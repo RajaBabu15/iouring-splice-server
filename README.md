@@ -142,8 +142,13 @@ make docker-run-tls            # exposes 8080 (http) and 8443 (https)
   (`tls_device`) on crypto-capable hardware. The splice path still avoids the
   userspace round-trip for the *file* bytes; the crypto transform is the added
   cost.
-- Pinned to TLS 1.3 + `TLS_AES_128_GCM_SHA256` (broadest kTLS RX coverage) and
-  server-side static files only.
+- **Pinned to TLS 1.2 + ECDHE-AES128-GCM**, server-side static files only.
+  This is deliberate: the request path uses io_uring `recv` on the raw fd,
+  which only sees plaintext if kTLS *RX* is active — and OpenSSL offloads
+  kTLS RX for **TLS 1.2 only** (TLS 1.3 gets kTLS TX but not RX, owing to
+  KeyUpdate handling). Verified on Linux 6.x: TLS 1.3 → `send=1 recv=0`,
+  TLS 1.2 → `send=1 recv=1`. A TLS 1.3 mode (kTLS TX + userspace `SSL_read`
+  for RX) is a possible future addition.
 
 ## Structure
 

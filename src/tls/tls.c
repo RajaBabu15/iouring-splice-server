@@ -15,14 +15,20 @@ int tls_init(const char *cert_file, const char *key_file)
         return -1;
     }
 
-    /* Pin TLS 1.3. kTLS support is most consistent here, and it lets us
-     * select a single, widely-offloaded AEAD below. */
-    SSL_CTX_set_min_proto_version(g_ctx, TLS1_3_VERSION);
-    SSL_CTX_set_max_proto_version(g_ctx, TLS1_3_VERSION);
-
-    /* AES-128-GCM has the broadest kTLS RX coverage across kernels. Pinning
-     * one suite keeps the kTLS handover deterministic. */
-    if (SSL_CTX_set_ciphersuites(g_ctx, "TLS_AES_128_GCM_SHA256") != 1) {
+    /*
+     * Pin TLS 1.2 with an AES-GCM AEAD suite. This is deliberate: we run the
+     * request path through io_uring recv on the raw fd, which only yields
+     * plaintext if kTLS *RX* is active — and OpenSSL offloads kTLS RX for
+     * TLS 1.2 only (TLS 1.3 gets kTLS TX but not RX, due to KeyUpdate
+     * handling). Verified on Linux 6.x: 1.3 -> send=1 recv=0, 1.2 -> 1/1.
+     * Pinning max to 1.2 keeps the whole data path in-kernel in both
+     * directions. (set_cipher_list is the TLS 1.2 knob; set_ciphersuites is
+     * TLS 1.3 only.)
+     */
+    SSL_CTX_set_min_proto_version(g_ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(g_ctx, TLS1_2_VERSION);
+    if (SSL_CTX_set_cipher_list(g_ctx,
+            "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256") != 1) {
         ERR_print_errors_fp(stderr);
         return -1;
     }

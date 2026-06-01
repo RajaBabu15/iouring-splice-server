@@ -17,9 +17,10 @@ enum tls_hs {
 };
 
 /*
- * Process-wide init: build the SSL_CTX, load cert/key, pin TLS 1.3 +
- * AES-128-GCM (the cipher with the broadest kTLS RX support), and request
- * kTLS via SSL_OP_ENABLE_KTLS. Returns 0 on success, -1 on failure.
+ * Process-wide init: build the SSL_CTX, load cert/key, pin TLS 1.2 +
+ * ECDHE-AES128-GCM, and request kTLS via SSL_OP_ENABLE_KTLS. TLS 1.2 is
+ * required because OpenSSL only offloads kTLS RX (which our io_uring recv
+ * path depends on) for 1.2, not 1.3. Returns 0 on success, -1 on failure.
  */
 int  tls_init(const char *cert_file, const char *key_file);
 
