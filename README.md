@@ -96,7 +96,7 @@ strace -p $! -e trace=read,write,sendfile 2>&1 &
 
 ## HTTPS via kernel TLS (kTLS) — optional
 
-An opt-in TLS 1.3 listener serves HTTPS while keeping the same io_uring data
+An opt-in TLS 1.2 listener serves HTTPS while keeping the same io_uring data
 path. OpenSSL performs **only the handshake**; after it completes, the
 negotiated keys are handed to the kernel's TLS ULP (`SSL_OP_ENABLE_KTLS` →
 `setsockopt(SOL_TLS, TLS_TX/TLS_RX)`), and from then on the kernel does record
@@ -149,6 +149,29 @@ make docker-run-tls            # exposes 8080 (http) and 8443 (https)
   KeyUpdate handling). Verified on Linux 6.x: TLS 1.3 → `send=1 recv=0`,
   TLS 1.2 → `send=1 recv=1`. A TLS 1.3 mode (kTLS TX + userspace `SSL_read`
   for RX) is a possible future addition.
+
+### Verified end-to-end on AWS EC2
+
+Docker Desktop's kernel has `CONFIG_TLS` disabled, so the kTLS data path was
+verified on a real kernel: a `t3.micro` running Ubuntu 24.04, kernel
+`6.17.0-1017-aws` with `CONFIG_TLS=m`. Built with `make build-tls`
+(`gcc -Wall -Wextra`, zero warnings) and exercised over `curl -k`:
+
+| Check | Result |
+|---|---|
+| `BIO_get_ktls_send` / `BIO_get_ktls_recv` (TLS 1.2) | `send=1 recv=1` — both offloaded |
+| Negotiated suite | `TLSv1.2 / ECDHE-RSA-AES128-GCM-SHA256` |
+| `GET /index.html`, `/hello.txt` over HTTPS | `200`, correct bodies |
+| `GET /big.bin` (4 MB, multi-chunk splice, kTLS-encrypted) | served `4194304` B, **md5 identical to source** |
+| `GET /medium.bin` (64 KB = one pipe capacity) | md5 identical |
+| `GET /missing` over HTTPS | `404` |
+| `--path-as-is /../../etc/passwd` over HTTPS | `404` (traversal guard holds) |
+| Cleartext `:8080` alongside `:8443` | `200` (both listeners) |
+| `kTLS not active` in server log | none |
+
+The 4 MB transfer proves the full kernel-offloaded path: io_uring `recv` reads
+kernel-decrypted plaintext, the `file→pipe→socket` splice is encrypted in-kernel
+on TX, and the bytes arrive intact. (Test instance was torn down afterward.)
 
 ## Structure
 
