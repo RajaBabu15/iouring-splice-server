@@ -2,7 +2,9 @@
 
 HTTP/1.1 static file server using `io_uring` for all I/O and `IORING_OP_SPLICE`
 for zero-copy file transfer. The two-splice path (file → pipe → socket) keeps
-file data in the page cache; it never touches userspace during transfer.
+file data in the page cache; it never touches userspace during transfer. An
+optional TLS 1.3 listener serves HTTPS over the same path using **kernel TLS
+(kTLS)** — see [HTTPS via kernel TLS](#https-via-kernel-tls-ktls--optional).
 
 ## How it works
 
@@ -92,16 +94,97 @@ strace -p $! -e trace=read,write,sendfile 2>&1 &
 # grep for read/write/sendfile: nothing — io_uring_enter handles everything
 ```
 
+## HTTPS via kernel TLS (kTLS) — optional
+
+An opt-in TLS 1.2 listener serves HTTPS while keeping the same io_uring data
+path. OpenSSL performs **only the handshake**; after it completes, the
+negotiated keys are handed to the kernel's TLS ULP (`SSL_OP_ENABLE_KTLS` →
+`setsockopt(SOL_TLS, TLS_TX/TLS_RX)`), and from then on the kernel does record
+framing and AES-GCM:
+
+```
+accept(tls) → SSL_accept driven by IORING_OP_POLL_ADD  (non-blocking, in-loop)
+            → require kTLS TX+RX → hand to the SAME recv/splice state machine
+```
+
+Because the socket has kTLS installed, the existing pipeline is reused
+**unchanged**: `io_uring` `recv` reads plaintext (kernel decrypts on RX), and
+the `file→pipe→socket` splice is encrypted in-kernel on TX. The handshake is
+driven asynchronously through `IORING_OP_POLL_ADD`, so it never blocks the
+single event loop.
+
+```bash
+# native Linux (kernel needs CONFIG_TLS; most distro kernels have it =m)
+sudo apt install liburing-dev libssl-dev gcc make
+make build-tls
+make certs                     # self-signed CN=localhost
+./server 8080 --tls-cert certs/server.crt --tls-key certs/server.key --tls-port 8443
+curl -k https://localhost:8443/index.html
+
+# Docker
+make docker-run-tls            # exposes 8080 (http) and 8443 (https)
+```
+
+### Honest caveats
+
+- **Requires `CONFIG_TLS` in the kernel.** The server requires kTLS in *both*
+  directions and **drops the connection** if the kernel can't install it
+  (rather than silently falling back) — you'll see `kTLS not active` in the
+  log. Notably, **Docker Desktop's linuxkit kernel is built with
+  `# CONFIG_TLS is not set`**, so the full kTLS path cannot run there; use a
+  native Linux host or a cloud VM whose kernel enables `tls`. (A userspace
+  `SSL_read`/`SSL_write` fallback for non-kTLS kernels is a possible future
+  addition; v1 is kTLS-only by design.)
+- **Software kTLS is not zero-copy on the encrypt path.** With `TLS_SW` the
+  kernel must copy plaintext into a buffer to AES-GCM it before transmit, so
+  the project's "no userspace copies" property does *not* fully carry over to
+  encrypted serving. True zero-copy encrypted send requires NIC TLS offload
+  (`tls_device`) on crypto-capable hardware. The splice path still avoids the
+  userspace round-trip for the *file* bytes; the crypto transform is the added
+  cost.
+- **Pinned to TLS 1.2 + ECDHE-AES128-GCM**, server-side static files only.
+  This is deliberate: the request path uses io_uring `recv` on the raw fd,
+  which only sees plaintext if kTLS *RX* is active — and OpenSSL offloads
+  kTLS RX for **TLS 1.2 only** (TLS 1.3 gets kTLS TX but not RX, owing to
+  KeyUpdate handling). Verified on Linux 6.x: TLS 1.3 → `send=1 recv=0`,
+  TLS 1.2 → `send=1 recv=1`. A TLS 1.3 mode (kTLS TX + userspace `SSL_read`
+  for RX) is a possible future addition.
+
+### Verified end-to-end on AWS EC2
+
+Docker Desktop's kernel has `CONFIG_TLS` disabled, so the kTLS data path was
+verified on a real kernel: a `t3.micro` running Ubuntu 24.04, kernel
+`6.17.0-1017-aws` with `CONFIG_TLS=m`. Built with `make build-tls`
+(`gcc -Wall -Wextra`, zero warnings) and exercised over `curl -k`:
+
+| Check | Result |
+|---|---|
+| `BIO_get_ktls_send` / `BIO_get_ktls_recv` (TLS 1.2) | `send=1 recv=1` — both offloaded |
+| Negotiated suite | `TLSv1.2 / ECDHE-RSA-AES128-GCM-SHA256` |
+| `GET /index.html`, `/hello.txt` over HTTPS | `200`, correct bodies |
+| `GET /big.bin` (4 MB, multi-chunk splice, kTLS-encrypted) | served `4194304` B, **md5 identical to source** |
+| `GET /medium.bin` (64 KB = one pipe capacity) | md5 identical |
+| `GET /missing` over HTTPS | `404` |
+| `--path-as-is /../../etc/passwd` over HTTPS | `404` (traversal guard holds) |
+| Cleartext `:8080` alongside `:8443` | `200` (both listeners) |
+| `kTLS not active` in server log | none |
+
+The 4 MB transfer proves the full kernel-offloaded path: io_uring `recv` reads
+kernel-decrypted plaintext, the `file→pipe→socket` splice is encrypted in-kernel
+on TX, and the bytes arrive intact. (Test instance was torn down afterward.)
+
 ## Structure
 
 ```
 src/
-├── main.c          entry point
+├── main.c          entry point (CLI flags, http + optional https listeners)
 ├── conn/           connection pool and state machine
 ├── http/           request parsing, MIME, response building
 ├── ring/           io_uring init and SQE submitters
-└── server/         listen socket, event loop, CQE dispatch
+├── server/         listen socket, event loop, CQE dispatch, TLS handshake
+└── tls/            OpenSSL handshake + kTLS handover (TLS_ENABLED builds only)
 Makefile
-Dockerfile          two-stage Ubuntu 24.04 build
+Dockerfile          two-stage Ubuntu 24.04 build (cleartext)
+Dockerfile.tls      kTLS build (adds libssl-dev, bakes a self-signed cert)
 www/                static files (make www)
 ```

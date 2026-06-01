@@ -2,6 +2,9 @@
 #include <string.h>
 #include <unistd.h>
 #include "conn.h"
+#ifdef TLS_ENABLED
+#include "tls/tls.h"
+#endif
 
 static conn_t conn_pool[MAX_CONNECTIONS];
 static int    free_list_head = -1;
@@ -35,6 +38,11 @@ void conn_free(conn_t *c)
 {
     if (!c->in_use)
         return;
+#ifdef TLS_ENABLED
+    /* Free before closing the fd: SSL_set_fd used BIO_NOCLOSE, so this does
+     * not touch the descriptor — conn_free still owns the close() below. */
+    if (c->ssl) { tls_free(c->ssl); c->ssl = NULL; }
+#endif
     if (c->sock_fd >= 0) { close(c->sock_fd); c->sock_fd = -1; }
     if (c->file_fd >= 0) { close(c->file_fd); c->file_fd = -1; }
     if (c->pipe_rd >= 0) { close(c->pipe_rd); c->pipe_rd = -1; }

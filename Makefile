@@ -9,7 +9,11 @@ SRCS = src/main.c \
        src/ring/ring.c \
        src/server/server.c
 
-.PHONY: all build run www bench clean docker-build docker-run
+# TLS build adds the OpenSSL handshake/kTLS module and links libssl/libcrypto.
+TLS_SRCS = $(SRCS) src/tls/tls.c
+
+.PHONY: all build build-tls run www bench certs clean \
+        docker-build docker-run docker-build-tls docker-run-tls
 
 all: build
 
@@ -17,6 +21,20 @@ build: $(TARGET)
 
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Opt-in HTTPS/kTLS build. Core 'build' stays dependency-free; this target is
+# the only one that needs libssl-dev. Produces the same ./server binary with
+# the TLS listener compiled in (-DTLS_ENABLED).
+build-tls:
+	$(CC) $(CFLAGS) -DTLS_ENABLED -o $(TARGET) $(TLS_SRCS) $(LDFLAGS) -lssl -lcrypto
+
+# Self-signed cert for local HTTPS testing (CN=localhost).
+certs:
+	@mkdir -p certs
+	@openssl req -x509 -newkey rsa:2048 -nodes \
+	    -keyout certs/server.key -out certs/server.crt \
+	    -days 365 -subj "/CN=localhost" 2>/dev/null
+	@echo "certs/ ready (self-signed, CN=localhost)"
 
 # Create sample files for the server to serve
 www:
@@ -46,6 +64,16 @@ docker-run: docker-build www
 	    --security-opt seccomp=unconfined \
 	    -v "$(CURDIR)/www:/app/www" \
 	    iouring-splice-server
+
+# HTTPS/kTLS image (separate Dockerfile; bakes a self-signed cert).
+docker-build-tls:
+	docker build -f Dockerfile.tls -t iouring-splice-server-tls .
+
+# kTLS needs CONFIG_TLS in the host/VM kernel; seccomp=unconfined for io_uring.
+docker-run-tls: docker-build-tls
+	docker run --rm -p $(or $(PORT),8080):8080 -p $(or $(TLS_PORT),8443):8443 \
+	    --security-opt seccomp=unconfined \
+	    iouring-splice-server-tls
 
 clean:
 	rm -f $(TARGET)

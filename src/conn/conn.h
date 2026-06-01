@@ -12,6 +12,7 @@ typedef enum {
     STATE_SPLICE_FILE_TO_PIPE,
     STATE_SPLICE_PIPE_TO_SOCK,
     STATE_SEND_404,
+    STATE_TLS_HANDSHAKE,        /* TLS only: SSL_accept driven by io_uring poll */
 } conn_state_t;
 
 typedef struct conn {
@@ -28,6 +29,8 @@ typedef struct conn {
     char          path[256];        /* relative fs path under www/ */
     int           free_next;
     bool          in_use;
+    bool          tls;              /* connection arrived on the TLS listener */
+    void         *ssl;              /* opaque SSL* (TLS builds only); NULL otherwise */
 } conn_t;
 
 void    conn_pool_init(void);

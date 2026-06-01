@@ -12,10 +12,17 @@
 #include "conn/conn.h"
 #include "http/http.h"
 #include "ring/ring.h"
+#ifdef TLS_ENABLED
+#include <poll.h>
+#include "tls/tls.h"
+#endif
 
 static int s_listen_fd;
 static int s_www_dirfd;
 static struct io_uring *s_ring;
+#ifdef TLS_ENABLED
+static int s_tls_listen_fd = -1;
+#endif
 
 static void handle_accept(struct io_uring_cqe *cqe)
 {
@@ -35,6 +42,76 @@ static void handle_accept(struct io_uring_cqe *cqe)
     ring_submit_recv(s_ring, c);
     ring_submit_accept(s_ring, s_listen_fd);    /* keep one accept always in flight */
 }
+
+#ifdef TLS_ENABLED
+/*
+ * Drive the TLS handshake one step. On completion we require kTLS in both
+ * directions, then hand the connection to the *unchanged* plaintext state
+ * machine: with kTLS RX the io_uring recv reads decrypted bytes, and with
+ * kTLS TX the existing splice/send path is encrypted transparently by the
+ * kernel. WANT_READ/WANT_WRITE re-arm a one-shot poll and we resume here.
+ */
+static void tls_drive_handshake(conn_t *c)
+{
+    switch (tls_do_handshake(c->ssl)) {
+    case TLS_HS_DONE:
+        if (!tls_kactive(c->ssl)) {
+            fprintf(stderr, "tls: kTLS not active (kernel lacks CONFIG_TLS, "
+                            "or OpenSSL built without ktls) — dropping conn\n");
+            conn_free(c);
+            return;
+        }
+        ring_submit_recv(s_ring, c);    /* reuse the cleartext recv path */
+        return;
+    case TLS_HS_WANT_READ:
+        c->state = STATE_TLS_HANDSHAKE;
+        ring_submit_poll(s_ring, c, POLLIN);
+        return;
+    case TLS_HS_WANT_WRITE:
+        c->state = STATE_TLS_HANDSHAKE;
+        ring_submit_poll(s_ring, c, POLLOUT);
+        return;
+    default:
+        conn_free(c);
+        return;
+    }
+}
+
+static void handle_accept_tls(struct io_uring_cqe *cqe)
+{
+    ring_submit_accept_tls(s_ring, s_tls_listen_fd);   /* keep one in flight */
+
+    if (cqe->res < 0) {
+        if (cqe->res != -EINTR)
+            fprintf(stderr, "accept(tls): %s\n", strerror(-cqe->res));
+        return;
+    }
+    conn_t *c = conn_alloc();
+    if (!c) { close(cqe->res); return; }
+
+    c->sock_fd = cqe->res;
+    c->tls     = true;
+
+    /* Non-blocking is required so SSL_accept yields WANT_READ/WANT_WRITE
+     * instead of blocking the single event loop. */
+    int fl = fcntl(c->sock_fd, F_GETFL, 0);
+    if (fl < 0 || fcntl(c->sock_fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+        conn_free(c);
+        return;
+    }
+
+    c->ssl = tls_new(c->sock_fd);
+    if (!c->ssl) { conn_free(c); return; }
+
+    tls_drive_handshake(c);
+}
+
+static void handle_tls_handshake(conn_t *c, struct io_uring_cqe *cqe)
+{
+    if (cqe->res < 0) { conn_free(c); return; }   /* poll error */
+    tls_drive_handshake(c);
+}
+#endif /* TLS_ENABLED */
 
 static void handle_recv(conn_t *c, struct io_uring_cqe *cqe)
 {
@@ -174,6 +251,13 @@ int server_open_www_dir(const char *path)
     return fd;
 }
 
+#ifdef TLS_ENABLED
+void server_set_tls_listener(int tls_listen_fd)
+{
+    s_tls_listen_fd = tls_listen_fd;
+}
+#endif
+
 void server_event_loop(struct io_uring *ring, int listen_fd, int www_dirfd)
 {
     s_ring      = ring;
@@ -181,6 +265,10 @@ void server_event_loop(struct io_uring *ring, int listen_fd, int www_dirfd)
     s_www_dirfd = www_dirfd;
 
     ring_submit_accept(ring, listen_fd);
+#ifdef TLS_ENABLED
+    if (s_tls_listen_fd >= 0)
+        ring_submit_accept_tls(ring, s_tls_listen_fd);
+#endif
     io_uring_submit(ring);
 
     for (;;) {
@@ -202,6 +290,10 @@ void server_event_loop(struct io_uring *ring, int listen_fd, int www_dirfd)
             } else if (ud == PROV_BUF_SENTINEL) {
                 if (cqe->res < 0)
                     fprintf(stderr, "provide_buffers: %s\n", strerror(-cqe->res));
+#ifdef TLS_ENABLED
+            } else if (ud == ACCEPT_TLS_SENTINEL) {
+                handle_accept_tls(cqe);
+#endif
             } else {
                 conn_t *c = (conn_t *)(uintptr_t)ud;
                 switch (c->state) {
@@ -211,6 +303,9 @@ void server_event_loop(struct io_uring *ring, int listen_fd, int www_dirfd)
                 case STATE_SPLICE_FILE_TO_PIPE: handle_splice_file_to_pipe(c, cqe); break;
                 case STATE_SPLICE_PIPE_TO_SOCK: handle_splice_pipe_to_sock(c, cqe); break;
                 case STATE_SEND_404:         handle_send_404(c, cqe);            break;
+#ifdef TLS_ENABLED
+                case STATE_TLS_HANDSHAKE:    handle_tls_handshake(c, cqe);       break;
+#endif
                 default:
                     fprintf(stderr, "unknown state %d\n", c->state);
                     conn_free(c);
